@@ -3,6 +3,7 @@ import pandas as pd
 import joblib
 import numpy as np
 import base64
+from agent import run_agent_pipeline
 
 # --- CONFIGURATION ---
 st.set_page_config(
@@ -505,6 +506,34 @@ if submitted:
                 st.markdown('</div>', unsafe_allow_html=True)
         except:
             pass
+
+        # --- AI AGENT LAYER INTEGRATION ---
+        with st.spinner("AI Agent is validating inputs and generating insights..."):
+            input_dict = input_data.iloc[0].to_dict()
+            agent_report = run_agent_pipeline(input_dict, "fleetmind_model.pkl")
+
+            st.markdown('<div class="brutalist-container" style="background:white; padding: 2rem; margin-top: 2rem;">', unsafe_allow_html=True)
+            st.markdown("<h3>AI AGENT ANALYSIS_</h3>", unsafe_allow_html=True)
+            
+            if "error" in agent_report:
+                st.error(f"**VALIDATION FAILED:** {agent_report['message']}")
+            else:
+                st.markdown(f"**HEALTH SUMMARY:** {agent_report.get('health_summary', 'N/A')}")
+                
+                c_a, c_b, c_c = st.columns(3)
+                c_a.metric("RISK LEVEL", agent_report.get('risk_level', 'UNKNOWN'))
+                c_b.metric("CONFIDENCE", agent_report.get('confidence', 'N/A'))
+                c_c.metric("TIMELINE", agent_report.get('timeline', 'N/A'))
+                
+                st.markdown("**RECOMMENDED ACTIONS:**")
+                for action in agent_report.get('actions', []):
+                    st.markdown(f"- {action}")
+                
+                st.info(f"**DISCLAIMER:** {agent_report.get('disclaimer', '')}")
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+
+
 
     except Exception as e:
         st.error(f"COMPUTE_ERROR: {str(e)}")
