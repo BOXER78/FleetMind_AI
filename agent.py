@@ -62,14 +62,19 @@ def validate_input(data: dict) -> dict:
 def load_ml_model(model_path: str = "fleetmind_model.pkl") -> Any:
     """
     Loads the trained ML pipeline without modifying it.
+    Strictly inference-only: Expects the model to already exist.
     """
+    if not os.path.exists(model_path):
+        logger.error("Model file not found. Please train the model separately.")
+        raise FileNotFoundError("Model file not found. Please train the model separately.")
+        
     try:
         model = joblib.load(model_path)
         logger.info(f"Successfully loaded model from {model_path}")
         return model
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
-        raise
+        raise ValueError("Model file missing or incompatible")
 
 def get_ml_prediction(model: Any, input_data: Union[pd.DataFrame, Dict[str, Any]]) -> tuple[int, float]:
     """
@@ -267,44 +272,119 @@ def enforce_output_rules(report: dict, vehicle_data: dict) -> dict:
         
     return final_report
 
+# --- LANGGRAPH IMPLEMENTATION ---
+
+from typing import TypedDict, Optional
+from langgraph.graph import StateGraph, END
+
+class AgentState(TypedDict):
+    input_data: dict
+    prediction: Optional[int]
+    probability: Optional[float]
+    vehicle_data: Optional[dict]
+    report: Optional[dict]
+    error: Optional[str]
+    model_path: Optional[str]
+
+def validate_node(state: AgentState):
+    validation_err = validate_input(state["input_data"])
+    if validation_err:
+        return {"error": validation_err.get("message", "Validation failed")}
+    return {}
+
+def predict_node(state: AgentState):
+    ml_model = load_ml_model(state.get("model_path", "fleetmind_model.pkl"))
+    pred, prob = get_ml_prediction(ml_model, state["input_data"])
+    return {"prediction": pred, "probability": prob}
+
+def prepare_node(state: AgentState):
+    vehicle_data = prepare_agent_input(state["input_data"], state["prediction"], state["probability"])
+    return {"vehicle_data": vehicle_data}
+
+def generate_node(state: AgentState):
+    raw_llm_response = generate_maintenance_insights(state["vehicle_data"], model_name="openai/gpt-oss-120b")
+    parsed_report = parse_agent_response(raw_llm_response)
+    return {"report": parsed_report}
+
+def enforce_node(state: AgentState):
+    final_report = enforce_output_rules(state["report"], state["vehicle_data"])
+    return {"report": final_report}
+
+def route_after_validation(state: AgentState):
+    if state.get("error"):
+        return "end"
+    return "predict_node"
+
+def build_graph():
+    workflow = StateGraph(AgentState)
+    
+    workflow.add_node("validate_node", validate_node)
+    workflow.add_node("predict_node", predict_node)
+    workflow.add_node("prepare_node", prepare_node)
+    workflow.add_node("generate_node", generate_node)
+    workflow.add_node("enforce_node", enforce_node)
+    
+    workflow.set_entry_point("validate_node")
+    
+    workflow.add_conditional_edges(
+        "validate_node",
+        route_after_validation,
+        {
+            "end": END,
+            "predict_node": "predict_node"
+        }
+    )
+    
+    workflow.add_edge("predict_node", "prepare_node")
+    workflow.add_edge("prepare_node", "generate_node")
+    workflow.add_edge("generate_node", "enforce_node")
+    workflow.add_edge("enforce_node", END)
+    
+    return workflow.compile()
+
+# Compile the graph instance
+agent_graph = build_graph()
+
 # --- MAIN AGENT PIPELINE FOR STREAMLIT PLUG-IN ---
 
 def run_agent_pipeline(input_data_dict: dict, model_path: str = "fleetmind_model.pkl") -> dict:
     """
-    Orchestrates the entire agent layer from a Streamlit input dictionary.
+    Orchestrates the entire agent layer from a Streamlit input dictionary using LangGraph.
     Returns the final structured json response as a python dictionary.
     """
-    # 0. Validate Input
-    validation_err = validate_input(input_data_dict)
-    if validation_err:
-        return validation_err
-        
     try:
-        # 1. Load Model
-        ml_model = load_ml_model(model_path)
+        initial_state = {
+            "input_data": input_data_dict,
+            "model_path": model_path
+        }
         
-        # 2. Perform Prediction
-        prediction_val, probability_val = get_ml_prediction(ml_model, input_data_dict)
+        # Execute the graph
+        result_state = agent_graph.invoke(initial_state)
         
-        # 3. Prepare Agent Input
-        vehicle_data = prepare_agent_input(input_data_dict, prediction_val, probability_val)
-        
-        # 4. Generate Insights via LLM
-        raw_llm_response = generate_maintenance_insights(vehicle_data, model_name="openai/gpt-oss-120b")
-        
-        # 5. Parse Output
-        parsed_report = parse_agent_response(raw_llm_response)
-        
-        # 6. Enforce Post-Processing Rules
-        final_report = enforce_output_rules(parsed_report, vehicle_data)
-        
-        # Strict adherence to return purely the agent report without injected metadata
-        return final_report
+        # Handle early termination (Validation Failure)
+        if result_state.get("error"):
+            return {
+                "error": "Invalid input data",
+                "message": result_state["error"]
+            }
+            
+        # Success path
+        if result_state.get("report"):
+            return result_state["report"]
+            
+        raise ValueError("Pipeline completed but no report was generated.")
         
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
+        error_msg = str(e)
+        if isinstance(e, FileNotFoundError) or "missing or incompatible" in error_msg:
+            return {
+                "error": "Model loading failed",
+                "message": "Model file missing or incompatible"
+            }
+            
         return {
-            "health_summary": f"System Failure: {str(e)}",
+            "health_summary": f"System Failure: {error_msg}",
             "risk_level": "UNKNOWN",
             "actions": ["Contact IT support"],
             "timeline": "N/A",
