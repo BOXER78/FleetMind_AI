@@ -6,6 +6,7 @@ import base64
 from agent import run_agent_pipeline
 from pdf_generator import generate_pdf
 
+
 # --- CONFIGURATION ---
 st.set_page_config(
     page_title="FleetMind AI • Predictive Maintenance",
