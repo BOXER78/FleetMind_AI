@@ -4,6 +4,8 @@ import joblib
 import numpy as np
 import base64
 from agent import run_agent_pipeline
+from pdf_generator import generate_pdf
+
 
 # --- CONFIGURATION ---
 st.set_page_config(
@@ -503,37 +505,81 @@ if submitted:
                             <div style="font-size: 2rem; font-weight: 900;">{factor['Impact']:.1f}%</div>
                         </div>
                         """, unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
         except:
             pass
 
-        # --- AI AGENT LAYER INTEGRATION ---
-        with st.spinner("AI Agent is validating inputs and generating insights..."):
-            input_dict = input_data.iloc[0].to_dict()
-            agent_report = run_agent_pipeline(input_dict, "fleetmind_model.pkl")
+        # AI Agent Insights (RAG Powered)
+        st.markdown('<h2 style="font-size: 2.5rem; color: black !important; margin-top: 3rem;">AI_AGENT_INSIGHTS_ (RAG_POWERED)</h2>', unsafe_allow_html=True)
+        
+        with st.spinner("Analyzing maintenance knowledge base..."):
+            input_dict = {
+                "Vehicle_Model": vehicle_model,
+                "Fuel_Type": fuel_type,
+                "Transmission_Type": transmission,
+                "Owner_Type": owner_type,
+                "Mileage": mileage,
+                "Reported_Issues": reported_issues,
+                "Vehicle_Age": vehicle_age,
+                "Engine_Size": engine_size,
+                "Odometer_Reading": odometer,
+                "Insurance_Premium": insurance_premium,
+                "Accident_History": accident_history,
+                "Fuel_Efficiency": fuel_efficiency,
+                "Days_Since_Last_Service": days_since_service,
+                "Warranty_Days_Left": warranty_days_left
+            }
+            report = run_agent_pipeline(input_dict)
 
-            st.markdown('<div class="brutalist-container" style="background:white; padding: 2rem; margin-top: 2rem;">', unsafe_allow_html=True)
-            st.markdown("<h3>AI AGENT ANALYSIS_</h3>", unsafe_allow_html=True)
-            
-            if "error" in agent_report:
-                st.error(f"**VALIDATION FAILED:** {agent_report['message']}")
-            else:
-                st.markdown(f"**HEALTH SUMMARY:** {agent_report.get('health_summary', 'N/A')}")
-                
-                c_a, c_b, c_c = st.columns(3)
-                c_a.metric("RISK LEVEL", agent_report.get('risk_level', 'UNKNOWN'))
-                c_b.metric("CONFIDENCE", agent_report.get('confidence', 'N/A'))
-                c_c.metric("TIMELINE", agent_report.get('timeline', 'N/A'))
-                
-                st.markdown("**RECOMMENDED ACTIONS:**")
-                for action in agent_report.get('actions', []):
-                    st.markdown(f"- {action}")
-                
-                st.info(f"**DISCLAIMER:** {agent_report.get('disclaimer', '')}")
-            
-            st.markdown('</div>', unsafe_allow_html=True)
+        if "health_summary" in report:
+            st.markdown(f"""
+            <div class="brutalist-container" style="background:white; padding: 2rem; border-left: 10px solid black;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                    <div style="flex: 2;">
+                        <h3>HEALTH_SUMMARY_</h3>
+                        <p style="font-size: 1.2rem; font-weight: 700;">{report['health_summary']}</p>
+                    </div>
+                    <div style="flex: 1; text-align: right; border-left: 2px solid black; padding-left: 1rem;">
+                         <div style="font-weight: 900; font-size: 0.8rem;">DETERMINISTIC_CONFIDENCE</div>
+                         <div style="font-size: 2.5rem; font-weight: 900;">{report['confidence']}</div>
+                    </div>
+                </div>
+                <hr style="border: 1px solid black; margin: 1.5rem 0;">
+                <div class="grid-row" style="border-bottom: none;">
+                    <div class="grid-cell" style="border-right: 2px solid black;">
+                        <h4>REQUIRED_ACTIONS_</h4>
+                        <ul style="font-weight: 700;">
+                            {''.join([f"<li>{action}</li>" for action in report.get('actions', [])])}
+                        </ul>
+                    </div>
+                    <div class="grid-cell" style="border-right: 2px solid black;">
+                        <h4>SERVICE_TIMELINE_</h4>
+                        <div style="font-weight: 900; font-size: 1.5rem; color: #FF3131 !important;">{report['timeline']}</div>
+                    </div>
+                    <div class="grid-cell">
+                        <h4>KNOWLEDGE_SOURCES_</h4>
+                        <div style="font-weight: 700; opacity: 0.7;">{report.get('sources', 'N/A')}</div>
+                        <div style="font-size: 0.7rem; margin-top: 1rem; font-style: italic;">{report.get('disclaimer', '')}</div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-
+            # --- PDF EXPORT FEATURE ---
+            try:
+                pdf_path = generate_pdf(report)
+                with open(pdf_path, "rb") as f:
+                    st.download_button(
+                        label="DOWNLOAD_MAINTENANCE_REPORT_PDF ↗",
+                        data=f,
+                        file_name="fleet_maintenance_report.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+            except Exception as pdf_err:
+                st.warning(f"PDF_GENERATION_FAILED: {pdf_err}")
+        else:
+            st.error(f"AGENT_ERROR: {report.get('message', 'Unknown failure')}")
 
     except Exception as e:
         st.error(f"COMPUTE_ERROR: {str(e)}")

@@ -6,6 +6,9 @@ import logging
 from typing import Dict, Any, Union
 from groq import Groq
 from dotenv import load_dotenv
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_core.documents import Document
 
 # Load environment variables
 load_dotenv()
@@ -117,15 +120,49 @@ def prepare_agent_input(input_dict: dict, prediction_val: int, probability_val: 
     logger.info(f"Prepared agent input: {vehicle_data}")
     return vehicle_data
 
-# --- STEP 3 & 4: LLM INTEGRATION & AGENT PROMPT EXECUTION ---
+# --- STEP 3: RAG KNOWLEDGE BASE & RETRIEVER ---
+
+def create_knowledge_base():
+    """
+    Step 1: Create a simple domain-specific knowledge base.
+    """
+    return [
+        "Brake pads: Replace every 30,000–50,000 km. Heavy towing reduces lifespan by 20%.",
+        "Engine oil: Replace every 10,000 km or 12 months, whichever comes first.",
+        "Battery: Replace every 3–5 years. Cold weather reduces battery performance.",
+        "Suspension: Inspect every 20,000 km for leaks or worn bushings.",
+        "Tires: Rotate every 8,000–10,000 km to ensure even wear.",
+        "Brake fluid: Flush and replace every 2 years.",
+        "Air filter: Replace every 15,000–30,000 km.",
+        "Transmission fluid: Check every 50,000 km for discoloration."
+    ]
+
+def build_vector_store():
+    """
+    Step 2: Vector store setup using Chroma and HuggingFaceEmbeddings.
+    """
+    rules = create_knowledge_base()
+    documents = [Document(page_content=rule) for rule in rules]
+    # Free embeddings model
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    # In-memory vector store for simplicity
+    vector_store = Chroma.from_documents(documents, embeddings)
+    return vector_store
+
+def get_retriever():
+    """
+    Step 3: Create a retriever for similarity search.
+    """
+    vector_store = build_vector_store()
+    return vector_store.as_retriever(search_kwargs={"k": 3})
+
+# --- STEP 4 & 5: LLM INTEGRATION & AGENT PROMPT EXECUTION ---
 
 def generate_maintenance_insights(vehicle_data: dict, model_name: str = "openai/gpt-oss-120b") -> dict:
     """
     Uses the Groq API interface to generate structured JSON output.
     """
     try:
-        # Initialize the Groq client. It will automatically look for GROQ_API_KEY in your environment.
-        # If you still want to route it to local Ollama, add: base_url="http://localhost:11434/v1" and api_key="ollama"
         client = Groq()
     except Exception as e:
         logger.error(f"Failed to initialize Groq client: {e}")
@@ -135,56 +172,50 @@ def generate_maintenance_insights(vehicle_data: dict, model_name: str = "openai/
 You are a senior AI engineer reviewing and correcting an AI agent used in a Fleet Maintenance Prediction System.
 
 SYSTEM CONTEXT:
-* ML model already outputs:
-  * prediction (0 or 1)
-  * probability (float)
-* LLM is used ONLY to generate explanations and recommendations
-* The system must be deterministic and production-safe
+* ML model already outputs prediction and probability.
+* RAG: Use the provided "maintenance rules" (RETRIEVED CONTEXT) to ground your recommendations.
 
 CRITICAL RULES:
-1. CONFIDENCE FIELD (MANDATORY CHANGE)
-* DO NOT generate confidence using natural language
-* DO NOT rephrase or interpret probability
-* Use EXACT probability value from input
-* Format as percentage string (e.g., "{vehicle_data['probability'] * 100:.1f}%")
+1. GROUNDING (MANDATORY)
+* MUST use retrieved rules when giving recommendations. 
+* DO NOT invent rules or hallucinate intervals.
+* If no relevant rules found in context -> say "Limited knowledge available" in health_summary.
+* Maintain strict JSON format.
 
-2. STRICT OUTPUT FORMAT
-* Output MUST be valid JSON
-* No extra keys
-* No explanations outside JSON
-* Base ALL reasoning ONLY on provided input
-* Do NOT hallucinate
-* Keep recommendations realistic
-* Max 4 actions
-* Keep output concise and structured
-* If input is insufficient -> return "Insufficient data"
-* No markdown
+2. CONFIDENCE FIELD
+* Use EXACT probability value from input as percentage string.
 
-ALLOWED OUTPUT STRUCTURE ONLY:
+3. STRICT OUTPUT FORMAT
+* Max 4 actions.
+* Limit recommendations to what is justified by context and vehicle data.
+* Keep temperature low (0.1–0.3).
+
+ALLOWED OUTPUT STRUCTURE:
 {{
   "health_summary": "...",
   "risk_level": "LOW | MEDIUM | HIGH",
   "actions": ["...", "..."],
   "timeline": "...",
   "confidence": "{vehicle_data['probability'] * 100:.1f}%",
+  "sources": "Knowledge base",
   "disclaimer": "..."
 }}
 
-INPUT:
-{json.dumps(vehicle_data, indent=2)}
+RETRIEVED CONTEXT (MAINTENANCE RULES):
+{vehicle_data.get('context', 'Limited knowledge available')}
+
+VEHICLE INPUT DATA:
+{json.dumps({k:v for k,v in vehicle_data.items() if k != 'context'}, indent=2)}
 """
 
     try:
-        # ChatCompletion via Groq client interface
         response = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": "You are an API that outputs ONLY raw JSON without markdown formatting."},
                 {"role": "user", "content": prompt}
             ],
             model=model_name,
-            # KEEP TEMPERATURE LOW (0.1 - 0.3) for consistent JSON output
             temperature=0.1, 
-            # If supported by the model, ensure deterministic response format
             response_format={"type": "json_object"} 
         )
         
@@ -194,13 +225,13 @@ INPUT:
         
     except Exception as e:
         logger.error(f"Error during LLM generation using {model_name}: {e}")
-        # Return fallback json string if generation fails to avoid crashing
         fallback = {
             "health_summary": "LLM generation failed.",
             "risk_level": "HIGH" if vehicle_data['prediction'] == 1 else "LOW",
             "actions": ["Perform manual inspection"],
             "timeline": "ASAP",
             "confidence": f"{vehicle_data['probability'] * 100:.1f}%",
+            "sources": "Knowledge base",
             "disclaimer": "Error generating advanced insights. Please review manually."
         }
         return json.dumps(fallback)
@@ -216,7 +247,7 @@ def parse_agent_response(raw_output: str) -> dict:
         parsed_json = json.loads(clean_output)
         
         # Basic validation of required keys
-        required_keys = ["health_summary", "risk_level", "actions", "timeline", "confidence", "disclaimer"]
+        required_keys = ["health_summary", "risk_level", "actions", "timeline", "confidence", "sources", "disclaimer"]
         for key in required_keys:
             if key not in parsed_json:
                 parsed_json[key] = "N/A"
@@ -241,7 +272,7 @@ def enforce_output_rules(report: dict, vehicle_data: dict) -> dict:
     Hardens the LLM output to match deterministic constraints and structure rules.
     """
     # 1. Remove Invalid Fields
-    allowed_keys = {"health_summary", "risk_level", "actions", "timeline", "confidence", "disclaimer"}
+    allowed_keys = {"health_summary", "risk_level", "actions", "timeline", "confidence", "sources", "disclaimer"}
     final_report = {k: v for k, v in report.items() if k in allowed_keys}
     
     # Ensure all required keys exist safely
@@ -282,6 +313,7 @@ class AgentState(TypedDict):
     prediction: Optional[int]
     probability: Optional[float]
     vehicle_data: Optional[dict]
+    context: Optional[str]
     report: Optional[dict]
     error: Optional[str]
     model_path: Optional[str]
@@ -301,8 +333,34 @@ def prepare_node(state: AgentState):
     vehicle_data = prepare_agent_input(state["input_data"], state["prediction"], state["probability"])
     return {"vehicle_data": vehicle_data}
 
+def retrieve_node(state: AgentState):
+    """
+    Step 4: Retrieve node to fetch relevant maintenance rules.
+    """
+    logger.info("Retrieving maintenance rules...")
+    v_data = state["vehicle_data"]
+    # Create query string from vehicle data
+    query = f"vehicle with {v_data['mileage']} km, {v_data['vehicle_age']} years old, {v_data['reported_issues']} reported issues."
+    
+    try:
+        retriever = get_retriever()
+        docs = retriever.invoke(query)
+        context = "\n".join([f"- {doc.page_content}" for doc in docs])
+        logger.info(f"Retrieved Context:\n{context}")
+        return {"context": context}
+    except Exception as e:
+        logger.error(f"Retrieval failed: {e}")
+        return {"context": "Limited knowledge available"}
+
 def generate_node(state: AgentState):
-    raw_llm_response = generate_maintenance_insights(state["vehicle_data"], model_name="openai/gpt-oss-120b")
+    """
+    Step 5: Modified generate node to include context.
+    """
+    # Combine vehicle data and context
+    input_to_llm = state["vehicle_data"].copy()
+    input_to_llm["context"] = state.get("context", "Limited knowledge available")
+    
+    raw_llm_response = generate_maintenance_insights(input_to_llm, model_name="openai/gpt-oss-120b")
     parsed_report = parse_agent_response(raw_llm_response)
     return {"report": parsed_report}
 
@@ -321,6 +379,7 @@ def build_graph():
     workflow.add_node("validate_node", validate_node)
     workflow.add_node("predict_node", predict_node)
     workflow.add_node("prepare_node", prepare_node)
+    workflow.add_node("retrieve_node", retrieve_node)
     workflow.add_node("generate_node", generate_node)
     workflow.add_node("enforce_node", enforce_node)
     
@@ -336,7 +395,8 @@ def build_graph():
     )
     
     workflow.add_edge("predict_node", "prepare_node")
-    workflow.add_edge("prepare_node", "generate_node")
+    workflow.add_edge("prepare_node", "retrieve_node")
+    workflow.add_edge("retrieve_node", "generate_node")
     workflow.add_edge("generate_node", "enforce_node")
     workflow.add_edge("enforce_node", END)
     

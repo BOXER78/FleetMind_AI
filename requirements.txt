@@ -46,3 +46,9 @@ xgboost
 langgraph
 groq
 python-dotenv
+chromadb
+langchain-huggingface
+langchain-community
+langchain-core
+sentence-transformers
+fpdf2
