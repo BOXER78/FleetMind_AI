@@ -275,7 +275,8 @@ st.markdown(f"""
 
     /* Button Styling */
     .stButton>button,
-    .stFormSubmitButton>button {{
+    .stFormSubmitButton>button,
+    .stDownloadButton>button {{
         width: 100%;
         border-radius: 0 !important;
         background: white !important;
@@ -292,15 +293,19 @@ st.markdown(f"""
 
     .stButton>button *,
     .stFormSubmitButton>button *,
+    .stDownloadButton>button *,
     .stButton>button p,
     .stFormSubmitButton>button p,
+    .stDownloadButton>button p,
     .stButton>button span,
-    .stFormSubmitButton>button span {{
+    .stFormSubmitButton>button span,
+    .stDownloadButton>button span {{
         color: black !important;
     }}
 
     .stButton>button:hover,
-    .stFormSubmitButton>button:hover {{
+    .stFormSubmitButton>button:hover,
+    .stDownloadButton>button:hover {{
         background: black !important;
         background-color: black !important;
         color: white !important;
@@ -310,13 +315,17 @@ st.markdown(f"""
 
     .stButton>button:hover *,
     .stFormSubmitButton>button:hover *,
+    .stDownloadButton>button:hover *,
     .stButton>button:hover p,
-    .stFormSubmitButton>button:hover p {{
+    .stFormSubmitButton>button:hover p,
+    .stDownloadButton>button:hover p {{
         color: white !important;
     }}
 
     .stFormSubmitButton>button:focus,
-    .stFormSubmitButton>button:active {{
+    .stFormSubmitButton>button:active,
+    .stDownloadButton>button:focus,
+    .stDownloadButton>button:active {{
         background: white !important;
         color: black !important;
         outline: none !important;
